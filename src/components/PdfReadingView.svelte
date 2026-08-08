@@ -17,7 +17,7 @@
   import { openPdf, type PdfDocument } from '../lib/pdf/loader'
   import { computePageSpanOffsets, type PdfPageInput } from '../lib/pdf/extract'
   import { chunkIndexForOffset, pageForChunk, pageForOffset } from '../lib/locate'
-  import type { Chunk, PdfMeta } from '../lib/types'
+  import type { Chunk, PdfMeta, PdfViewMode } from '../lib/types'
   import ReadingControls from './ReadingControls.svelte'
 
   interface Props {
@@ -44,6 +44,12 @@
     abEnd?: number | null
     onToggleRepeatOne?: () => void
     onAbButton?: () => void
+    /** 표시 방식: 연속 스크롤 / 한 쪽씩 넘김. */
+    viewMode?: PdfViewMode
+    onChangeViewMode?: (m: PdfViewMode) => void
+    /** 재생이 다음 쪽으로 가면 화면도 따라갈지. */
+    followPlayback?: boolean
+    onChangeFollow?: (v: boolean) => void
   }
   const {
     docId,
@@ -61,7 +67,15 @@
     abEnd = null,
     onToggleRepeatOne,
     onAbButton,
+    viewMode = 'scroll',
+    onChangeViewMode,
+    followPlayback = true,
+    onChangeFollow,
   }: Props = $props()
+
+  const paged = $derived(viewMode === 'paged')
+  /** 넘김 모드에서 지금 보고 있는 쪽(1-based). */
+  let pageCursor = $state(1)
 
   /** 재생 중인 페이지(1-based). 가상화에서 제외해 하이라이트가 사라지지 않게 한다. */
   const activePage = $derived(
@@ -381,9 +395,13 @@
       const page = pageForOffset(pdf.pageRanges, off)
       if (!page) return
       activeJump = off // 레이어가 다시 만들어져도 계속 칠하도록 기억해 둔다
-      // 대상 페이지를 먼저 화면 안으로 — 그래야 가상화가 그 페이지를 그린다.
-      hosts.get(page)?.scrollIntoView({ block: 'start' })
-      if (!textLayers.has(page)) enqueue(page)
+      if (paged) {
+        pageCursor = page // 넘김 모드는 그 쪽으로 넘긴다(위 effect 가 렌더까지 처리)
+      } else {
+        // 대상 페이지를 먼저 화면 안으로 — 그래야 가상화가 그 페이지를 그린다.
+        hosts.get(page)?.scrollIntoView({ block: 'start' })
+        if (!textLayers.has(page)) enqueue(page)
+      }
 
       // ⚠️ 렌더 완료 시점을 단정할 수 없다: 우리가 넣은 요청 외에 스크롤이 부른
       //    IntersectionObserver 도 같은 큐에 렌더를 얹기 때문에, 체인 하나를 기다리는 것만으로는
@@ -437,9 +455,39 @@
     return r.bottom < c.top - UNLOAD_MARGIN_PX || r.top > c.bottom + UNLOAD_MARGIN_PX
   }
 
+  // ── 넘김 모드: 보이는 한 쪽만 그린다 ──
+  // 스크롤이 없으니 IntersectionObserver 대신 커서로 직접 관리한다. 인접 쪽을 미리 그리지
+  // 않는 이유는 숨긴 요소의 폭이 0 이라 해상도를 잘못 잡기 때문 — 전환 때 그리는 편이 안전하다.
+  $effect(() => {
+    if (!paged || !doc) return
+    const cur = pageCursor
+    for (const p of [...canvases.keys()]) if (p !== cur) releasePage(p)
+    if (!canvases.has(cur)) enqueue(cur)
+  })
+
+  /** 마지막으로 "재생을 따라" 옮긴 쪽. 사용자가 직접 넘긴 것과 구분하는 기준. */
+  let lastFollowedPage = 0
+
+  /**
+   * 재생이 다른 쪽으로 넘어가면 화면도 따라간다(끌 수 있다 — 읽던 쪽이 바뀌면 흐름이 끊긴다).
+   *
+   * ⚠️ pageCursor 를 **읽지 않는다**. 읽으면 사용자가 ▶ 로 넘기는 순간 이 effect 가 다시 돌아
+   * 재생 위치로 즉시 되돌려 버린다(실측: 버튼이 먹지 않는 것처럼 보였다).
+   * activePage 가 실제로 바뀐 경우에만 따라가도록 직전 값과 비교한다.
+   */
+  $effect(() => {
+    const ap = activePage
+    const on = paged && followPlayback
+    if (!on || ap <= 0) return
+    if (ap !== lastFollowedPage) {
+      lastFollowedPage = ap
+      pageCursor = ap
+    }
+  })
+
   // ── 가시성 관찰: 들어오면 그리고, 충분히 멀어지면 해제 ──
   $effect(() => {
-    if (!container || !doc) return
+    if (!container || !doc || paged) return // 넘김 모드는 위에서 직접 관리
     const root = container
 
     // IO 미지원 환경 안전망: 가상화를 끄면 대용량 문서에서 메모리가 터지므로,
@@ -472,7 +520,7 @@
    * 점프했을 때 앞쪽 두 쪽이 남았다). 긴 문서에서 이 누수가 쌓이면 메모리가 위험하다.
    */
   $effect(() => {
-    if (!container) return
+    if (!container || paged) return // 넘김 모드는 스크롤이 없어 쓸 일이 없다
     const root = container
     let pending = false
     const sweep = (): void => {
@@ -552,9 +600,54 @@
   />
 {/if}
 
+<div class="view-bar">
+  <div class="mode" role="group" aria-label="정독 표시 방식">
+    <button type="button" class:on={!paged} onclick={() => onChangeViewMode?.('scroll')}>연속</button>
+    <button type="button" class:on={paged} onclick={() => onChangeViewMode?.('paged')}>넘김</button>
+  </div>
+
+  {#if paged}
+    <div class="pager">
+      <button
+        type="button"
+        onclick={() => (pageCursor = Math.max(1, pageCursor - 1))}
+        disabled={pageCursor <= 1}
+        aria-label="이전 쪽">◀</button
+      >
+      <span class="pageno">{pageCursor} / {pdf.pageCount}</span>
+      <button
+        type="button"
+        onclick={() => (pageCursor = Math.min(pdf.pageCount, pageCursor + 1))}
+        disabled={pageCursor >= pdf.pageCount}
+        aria-label="다음 쪽">▶</button
+      >
+    </div>
+    {#if chunks.length > 0}
+      <label class="follow">
+        <input
+          type="checkbox"
+          checked={followPlayback}
+          onchange={(e) => onChangeFollow?.(e.currentTarget.checked)}
+        />
+        재생 따라가기
+      </label>
+    {/if}
+  {:else}
+    <span class="hint">
+      {pdf.pageCount}쪽{residentPages.length ? ` · ${residentPages.length}쪽 그려 둠` : ''}
+    </span>
+  {/if}
+</div>
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="reading" bind:this={container} onclick={handleClick} ondblclick={handleDblClick}>
+<div
+  class="reading"
+  class:paged
+  bind:this={container}
+  onclick={handleClick}
+  ondblclick={handleDblClick}
+>
   {#if loading}
     <p class="state">원본을 여는 중…</p>
   {:else if loadError}
@@ -565,6 +658,7 @@
     <div
       class="page"
       class:active={page === activePage}
+      class:hidden={paged && page !== pageCursor}
       data-page={page}
       style:aspect-ratio="1 / {ratioOf(page)}"
       bind:this={
@@ -580,11 +674,6 @@
   {/each}
 </div>
 
-<p class="hint">
-  {pdf.pageCount}쪽 · 화면에 보이는 페이지만 그립니다{residentPages.length
-    ? ` (현재 ${residentPages.length}쪽 상주)`
-    : ''}
-</p>
 
 <style>
   .reading {
@@ -617,6 +706,76 @@
   .page.active {
     outline: 2px solid #2b4c8c;
     outline-offset: -1px;
+  }
+  /* 넘김 모드: 현재 쪽만 남긴다. 숨긴 쪽은 폭이 0 이라 렌더 대상에서도 빼야 한다(위 effect). */
+  .page.hidden {
+    display: none;
+  }
+  .reading.paged {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .view-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .mode {
+    display: inline-flex;
+    border: 1px solid var(--border, #e3e7ef);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .mode button {
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.3rem 0.7rem;
+    border: 0;
+    background: var(--surface, #fff);
+    color: var(--muted, #4a5568);
+    cursor: pointer;
+  }
+  .mode button.on {
+    background: #2b4c8c;
+    color: #fff;
+    font-weight: 600;
+  }
+  .pager {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .pager button {
+    font: inherit;
+    font-size: 0.9rem;
+    padding: 0.25rem 0.7rem;
+    border: 1px solid var(--border, #e3e7ef);
+    border-radius: 8px;
+    background: var(--surface, #fff);
+    color: var(--text, #1c2230);
+    cursor: pointer;
+  }
+  .pager button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .pageno {
+    font-size: 0.85rem;
+    color: var(--text, #1c2230);
+    min-width: 4.5rem;
+    text-align: center;
+  }
+  .follow {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    color: var(--muted, #4a5568);
+    cursor: pointer;
+    margin-left: auto;
   }
   .page-no {
     position: absolute;

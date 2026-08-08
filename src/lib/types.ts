@@ -282,8 +282,18 @@ export type EngineKind = 'webspeech' | 'supertonic'
 /** Supertonic 합성 품질 프리셋 — 엔진에서 totalStep(추론 횟수)로 매핑(빠름5/표준8/고품질12). */
 export type TtsQuality = 'fast' | 'standard' | 'high'
 
+/** 정독뷰 표시 방식. scroll=페이지가 세로로 이어짐, paged=한 번에 한 쪽씩. */
+export type PdfViewMode = 'scroll' | 'paged'
+
 export interface Settings {
   rate: number // 배속(FN-08), 기본 1.0
+  /** 정독뷰 표시 방식. 기본 'scroll'. */
+  pdfViewMode: PdfViewMode
+  /**
+   * 재생이 다음 쪽으로 넘어갈 때 화면도 따라갈지.
+   * 넘김 모드에서 특히 중요하다 — 읽던 쪽이 강제로 바뀌면 흐름이 끊기므로 끌 수 있어야 한다.
+   */
+  followPlayback: boolean
   theme: ThemePref
   engine: EngineKind // 현재 'webspeech'(부트스트랩). 정체성은 'supertonic'
   ttsQuality: TtsQuality // Supertonic 합성 품질(totalStep 매핑). 기본 'standard'(=step 8)
@@ -294,6 +304,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   rate: 1.0,
+  pdfViewMode: 'scroll',
+  followPlayback: true,
   theme: 'system',
   engine: 'webspeech',
   ttsQuality: 'standard',

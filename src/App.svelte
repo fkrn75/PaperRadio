@@ -31,6 +31,16 @@
   let view = $state<'library' | 'player'>('library')
   /** 문서 화면의 탭. 청취=재생 컨트롤, 정독=원본 페이지. */
   let tab = $state<'listen' | 'read'>('listen')
+  /**
+   * 정독뷰를 한 번이라도 열었는가.
+   *
+   * 열고 나면 탭을 옮겨도 **컴포넌트를 살려 두고 숨기기만** 한다. 매번 지웠다 만들면
+   * 보던 쪽이 1쪽으로 리셋되고(실측) 원본 PDF 도 다시 파싱해야 해서 낭비다.
+   */
+  let readMounted = $state(false)
+  $effect(() => {
+    if (tab === 'read') readMounted = true
+  })
   let doc = $state<StoredDocument | null>(null)
   let bookmarks = $state<Bookmark[]>([])
   /**
@@ -84,6 +94,8 @@
       engine.seekToChunk(resume)
     }
     playing = false
+    jumpTarget = null
+    readMounted = false // 다른 문서를 열었으니 정독뷰는 새로 만든다
     // 스캔본은 들을 게 없으니 곧바로 정독(원본 보기)으로 연다.
     tab = isViewOnly(d) ? 'read' : 'listen'
     view = 'player'
@@ -219,24 +231,33 @@
             />
           {/if}
         {/if}
-      {:else}
-        <PdfReadingView
-          docId={doc.id}
-          pdf={doc.pdf}
-          rawText={doc.rawText}
-          {chunks}
-          {currentChunkIndex}
-          {jumpTarget}
-          {playing}
-          onTogglePlay={togglePlay}
-          onSeek={(i) => engine.seekToChunk(i)}
-          onSeekPlay={seekAndPlay}
-          {repeatMode}
-          {abStart}
-          {abEnd}
-          onToggleRepeatOne={() => (repeatMode = repeatMode === 'one' ? 'off' : 'one')}
-          onAbButton={handleAbButton}
-        />
+      {/if}
+
+      <!-- 정독뷰는 한 번 열면 숨기기만 한다(보던 쪽·로드한 원본을 유지). -->
+      {#if readMounted}
+        <div class="read-pane" class:hidden={tab !== 'read'}>
+          <PdfReadingView
+            docId={doc.id}
+            pdf={doc.pdf}
+            rawText={doc.rawText}
+            {chunks}
+            {currentChunkIndex}
+            {jumpTarget}
+            {playing}
+            onTogglePlay={togglePlay}
+            onSeek={(i) => engine.seekToChunk(i)}
+            onSeekPlay={seekAndPlay}
+            {repeatMode}
+            {abStart}
+            {abEnd}
+            onToggleRepeatOne={() => (repeatMode = repeatMode === 'one' ? 'off' : 'one')}
+            onAbButton={handleAbButton}
+            viewMode={settingsStore.value.pdfViewMode}
+            onChangeViewMode={(m) => settingsStore.patch({ pdfViewMode: m })}
+            followPlayback={settingsStore.value.followPlayback}
+            onChangeFollow={(v) => settingsStore.patch({ followPlayback: v })}
+          />
+        </div>
       {/if}
     </section>
   {/if}
@@ -309,6 +330,13 @@
   .tab:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  /* 정독뷰는 지우지 않고 숨긴다 — 보던 쪽과 이미 파싱한 원본을 유지하기 위해. */
+  .read-pane {
+    display: contents;
+  }
+  .read-pane.hidden {
+    display: none;
   }
   .notice {
     border: 1px solid var(--border, #e3e7ef);
