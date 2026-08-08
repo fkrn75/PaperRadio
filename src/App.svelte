@@ -12,7 +12,13 @@
   import { hashText } from './lib/instrumentation'
   import { settingsStore } from './lib/stores/settings.svelte'
   import { libraryStore } from './lib/stores/library.svelte'
-  import { getDocument, updateLastChunkIndex, addBookmark, listBookmarks } from './lib/db/idb'
+  import {
+    getDocument,
+    updateLastChunkIndex,
+    addBookmark,
+    listBookmarks,
+    deleteBookmark,
+  } from './lib/db/idb'
   import { isViewOnly } from './lib/pdf/document'
   import { pageForChunk } from './lib/locate'
   import type { Bookmark, EnginePosition, StoredDocument } from './lib/types'
@@ -20,12 +26,19 @@
   import Library from './components/Library.svelte'
   import Player from './components/Player.svelte'
   import PdfReadingView from './components/PdfReadingView.svelte'
+  import BookmarkList from './components/BookmarkList.svelte'
 
   let view = $state<'library' | 'player'>('library')
   /** 문서 화면의 탭. 청취=재생 컨트롤, 정독=원본 페이지. */
   let tab = $state<'listen' | 'read'>('listen')
   let doc = $state<StoredDocument | null>(null)
   let bookmarks = $state<Bookmark[]>([])
+  /**
+   * 북마크가 가리키는 원문 위치. 정독뷰가 이 값이 바뀔 때 스크롤·강조한다.
+   * nonce 를 함께 둔 이유: 같은 북마크를 다시 눌러도 다시 이동해야 하기 때문(값만 보면 변화가 없다).
+   */
+  let jumpTarget = $state<{ offset: number; nonce: number } | null>(null)
+  let jumpNonce = 0
 
   // 재생 상태(단일 소스)
   let engine = $state(createEngine(settingsStore.value.engine))
@@ -105,6 +118,22 @@
     bookmarks = await listBookmarks(b.documentId)
   }
 
+  async function handleDeleteBookmark(id: string): Promise<void> {
+    await deleteBookmark(id)
+    if (doc) bookmarks = await listBookmarks(doc.id)
+  }
+
+  /**
+   * 북마크 → 원문 위치로 점프.
+   * 북마크는 (청크, 청크 내 상대 offset)로 저장되므로 절대 offset 으로 환산해 넘긴다.
+   */
+  function handleJump(b: Bookmark): void {
+    const c = chunks[b.chunkIndex]
+    if (!c) return
+    jumpTarget = { offset: c.startOffset + b.charOffset, nonce: ++jumpNonce }
+    tab = 'read'
+  }
+
   /** ↔ 버튼: 현재 청크 기준 A → B → 해제 순환. */
   function handleAbButton(): void {
     if (repeatMode === 'ab') {
@@ -180,6 +209,15 @@
             onToggleRepeatOne={() => (repeatMode = repeatMode === 'one' ? 'off' : 'one')}
             onAbButton={handleAbButton}
           />
+          {#if bookmarks.length > 0}
+            <BookmarkList
+              {bookmarks}
+              onJump={handleJump}
+              ondelete={handleDeleteBookmark}
+              docId={doc.id}
+              {docHash}
+            />
+          {/if}
         {/if}
       {:else}
         <PdfReadingView
@@ -188,6 +226,7 @@
           rawText={doc.rawText}
           {chunks}
           {currentChunkIndex}
+          {jumpTarget}
           {playing}
           onTogglePlay={togglePlay}
           onSeek={(i) => engine.seekToChunk(i)}

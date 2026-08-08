@@ -16,7 +16,7 @@
   import { getPdfBlob } from '../lib/db/idb'
   import { openPdf, type PdfDocument } from '../lib/pdf/loader'
   import { computePageSpanOffsets, type PdfPageInput } from '../lib/pdf/extract'
-  import { chunkIndexForOffset, pageForChunk } from '../lib/locate'
+  import { chunkIndexForOffset, pageForChunk, pageForOffset } from '../lib/locate'
   import type { Chunk, PdfMeta } from '../lib/types'
   import ReadingControls from './ReadingControls.svelte'
 
@@ -28,6 +28,11 @@
     chunks: Chunk[]
     /** 재생 중인 청크(하이라이트 대상). */
     currentChunkIndex?: number
+    /**
+     * 북마크 점프 대상. nonce 가 바뀔 때마다 그 위치로 스크롤 + 강조한다
+     * (같은 북마크를 다시 눌러도 다시 이동해야 하므로 offset 만으로는 부족하다).
+     */
+    jumpTarget?: { offset: number; nonce: number } | null
     playing?: boolean
     onTogglePlay?: () => void
     /** 문장 클릭 → 그 청크로 이동. */
@@ -46,6 +51,7 @@
     rawText,
     chunks,
     currentChunkIndex,
+    jumpTarget = null,
     playing = false,
     onTogglePlay,
     onSeek,
@@ -195,7 +201,9 @@
       await task.promise
       // 원본 위에 투명 텍스트를 얹는다 — 하이라이트와 클릭 재생의 실체.
       await buildTextLayer(page, p, cssScale, host)
+      // 새로 생긴 레이어에도 현재 표시들을 다시 입힌다(가상화로 지워졌다 살아나므로).
       applyHighlight()
+      if (activeJump !== null) markJump(activeJump)
     } catch {
       // 취소(cancel)도 여기로 온다 — 흔적을 남기지 않고 되돌린다.
       canvas.width = 0
@@ -323,6 +331,69 @@
     const first = highlighted[0]
     // block:'nearest' — 이미 보이면 움직이지 않는다(읽는 흐름을 덜 방해).
     first?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  })
+
+  // ── 북마크 점프 ──
+  /** 점프로 강조된 span 들(다음 점프 때 되돌린다). */
+  let jumped: HTMLElement[] = []
+  /**
+   * 지금 강조해 둘 점프 위치.
+   *
+   * ⚠️ 상태로 들고 있어야 한다. 점프 스크롤이 가상화를 깨워 **텍스트 레이어가 지워졌다
+   * 다시 만들어지면** 붙여 둔 클래스가 함께 날아가기 때문이다(실측: spanCount 가
+   * 0→16→0→24 로 오가며 강조가 사라졌다). 레이어가 새로 생길 때마다 다시 칠한다.
+   */
+  let activeJump: number | null = null
+
+  /** 해당 offset 을 품은 span 에 강조 표시만 한다(스크롤 없음). */
+  function markJump(off: number): boolean {
+    for (const el of jumped) el.classList.remove('jump')
+    jumped = []
+    if (!container) return false
+    const spans = container.querySelectorAll<HTMLElement>('.text-layer span[data-start]')
+    for (const s of spans) {
+      if (off >= Number(s.dataset.start) && off < Number(s.dataset.end)) {
+        s.classList.add('jump')
+        jumped.push(s)
+        return true
+      }
+    }
+    return false
+  }
+
+  /** 강조 + 화면 가운데로 이동. 재생 하이라이트(nearest)와 달리 확실히 보여준다. */
+  function applyJump(off: number): boolean {
+    if (!markJump(off)) return false
+    jumped[0]?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    return true
+  }
+
+  $effect(() => {
+    // ⚠️ 의존성을 먼저 전부 읽는다. `!t || !container || !doc` 처럼 조건에서 읽으면
+    //    short-circuit 으로 뒤쪽 값을 건너뛰어 **추적이 끊긴다** — 탭을 열자마자 점프하면
+    //    문서 로드 전에 한 번 돌고 끝나 강조가 영영 안 붙는다(실측으로 확인).
+    const t = jumpTarget
+    const host = container
+    const pdfDoc = doc
+    if (!t || !host || !pdfDoc) return
+    const off = t.offset
+    void (async () => {
+      const page = pageForOffset(pdf.pageRanges, off)
+      if (!page) return
+      activeJump = off // 레이어가 다시 만들어져도 계속 칠하도록 기억해 둔다
+      // 대상 페이지를 먼저 화면 안으로 — 그래야 가상화가 그 페이지를 그린다.
+      hosts.get(page)?.scrollIntoView({ block: 'start' })
+      if (!textLayers.has(page)) enqueue(page)
+
+      // ⚠️ 렌더 완료 시점을 단정할 수 없다: 우리가 넣은 요청 외에 스크롤이 부른
+      //    IntersectionObserver 도 같은 큐에 렌더를 얹기 때문에, 체인 하나를 기다리는 것만으로는
+      //    대상 페이지의 텍스트 레이어가 준비됐다고 보장되지 않는다(실측: 강조가 붙지 않았다).
+      //    그래서 span 이 나타날 때까지 짧게 재시도한다.
+      for (let i = 0; i < 25; i++) {
+        if (applyJump(off)) return
+        await new Promise((r) => setTimeout(r, 100))
+      }
+    })()
   })
 
   // ── 클릭/더블클릭 재생 ──
@@ -584,6 +655,11 @@
   }
   .page :global(.text-layer span.cur) {
     background: var(--highlight, rgba(255, 208, 0, 0.38));
+  }
+  /* 북마크로 찾아온 위치 — 재생 하이라이트와 색을 달리해 구분한다. */
+  .page :global(.text-layer span.jump) {
+    background: var(--highlight-bookmark, rgba(43, 76, 140, 0.28));
+    outline: 1px solid rgba(43, 76, 140, 0.5);
   }
   .state {
     margin: 0;
