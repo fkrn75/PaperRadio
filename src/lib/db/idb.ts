@@ -1,11 +1,13 @@
 /**
- * IndexedDB 래퍼 — documents / bookmarks / settings 영속 저장.
+ * IndexedDB 래퍼 — documents / pdfBlobs / bookmarks / settings 영속 저장.
  *
- * 명세(03-functional-spec) "데이터 저장소 요약" 기준:
- *  - documents : 원문·정제본·청크·마지막 위치(StoredDocument)
+ *  - documents : 추출 원문·청크·PDF 메타·마지막 위치(StoredDocument)
+ *  - pdfBlobs  : **원본 PDF 바이트**. 정독뷰가 원본 페이지를 다시 그리려면 반드시 필요하다.
+ *                documents 와 **분리한 이유**: PDF 는 수 MB~수십 MB 라, 같은 스토어에 두면
+ *                라이브러리 목록을 조회할 때마다 전체 바이트를 읽어와 느려진다.
  *  - bookmarks : 북마크({chunkIndex, charOffset}), documentId 인덱스로 문서별 조회
  *  - settings  : 전역 설정 1건('global' 키)
- *  - (models 스토어는 온디바이스 Supertonic 도입 시 후순위 — 여기서는 미생성)
+ *  - (모델 가중치는 modelCache.ts 가 자체 캐시로 관리 — 여기서 다루지 않는다)
  *
  * 타입은 모두 types.ts(계약, SSOT)에 의존한다. 이 파일은 직렬화/CRUD만 책임진다.
  */
@@ -21,15 +23,20 @@ import {
 // ─────────────────────────────────────────────────────────────
 // 스키마 정의
 // ─────────────────────────────────────────────────────────────
-const DB_NAME = 'markdown-radio'
+const DB_NAME = 'paper-radio'
 const DB_VERSION = 1
 /** settings 스토어의 고정 단일 키 */
 const SETTINGS_KEY = 'global'
 
-interface MarkdownRadioDB extends DBSchema {
+interface PaperRadioDB extends DBSchema {
   documents: {
     key: string
     value: StoredDocument
+  }
+  /** 원본 PDF 바이트. 키는 documents 의 id 와 동일. */
+  pdfBlobs: {
+    key: string
+    value: Blob
   }
   bookmarks: {
     key: string
@@ -46,16 +53,20 @@ interface MarkdownRadioDB extends DBSchema {
 // ─────────────────────────────────────────────────────────────
 // DB 핸들 (싱글턴)
 // ─────────────────────────────────────────────────────────────
-let dbPromise: Promise<IDBPDatabase<MarkdownRadioDB>> | null = null
+let dbPromise: Promise<IDBPDatabase<PaperRadioDB>> | null = null
 
 /** DB 핸들을 연다(최초 1회 스토어/인덱스 생성). 이후 호출은 같은 Promise 재사용. */
-export function getDB(): Promise<IDBPDatabase<MarkdownRadioDB>> {
+export function getDB(): Promise<IDBPDatabase<PaperRadioDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<MarkdownRadioDB>(DB_NAME, DB_VERSION, {
+    dbPromise = openDB<PaperRadioDB>(DB_NAME, DB_VERSION, {
       upgrade(db) {
         // documents: 인라인 키(id)
         if (!db.objectStoreNames.contains('documents')) {
           db.createObjectStore('documents', { keyPath: 'id' })
+        }
+        // pdfBlobs: out-of-line 키(문서 id 를 키로 직접 지정)
+        if (!db.objectStoreNames.contains('pdfBlobs')) {
+          db.createObjectStore('pdfBlobs')
         }
         // bookmarks: 인라인 키(id) + documentId 인덱스(문서별 조회·cascade 삭제)
         if (!db.objectStoreNames.contains('bookmarks')) {
@@ -70,6 +81,21 @@ export function getDB(): Promise<IDBPDatabase<MarkdownRadioDB>> {
     })
   }
   return dbPromise
+}
+
+// ─────────────────────────────────────────────────────────────
+// pdfBlobs CRUD (원본 바이트)
+// ─────────────────────────────────────────────────────────────
+/** 원본 PDF 저장. 키는 문서 id 와 같다. */
+export async function savePdfBlob(id: string, blob: Blob): Promise<void> {
+  const db = await getDB()
+  await db.put('pdfBlobs', blob, id)
+}
+
+/** 원본 PDF 조회(없으면 undefined — 저장 실패했거나 옛 문서). */
+export async function getPdfBlob(id: string): Promise<Blob | undefined> {
+  const db = await getDB()
+  return db.get('pdfBlobs', id)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -96,15 +122,17 @@ export async function getDocument(id: string): Promise<StoredDocument | undefine
 }
 
 /**
- * 문서 삭제 + 연결된 북마크 cascade 삭제(FN-09 엣지케이스).
- * 같은 트랜잭션에서 둘 다 지워 정합성을 보장한다.
+ * 문서 삭제 + 원본 PDF + 연결된 북마크 cascade 삭제.
+ * 같은 트랜잭션에서 모두 지워 정합성을 보장한다(원본 바이트가 남아 용량을 먹는 일 방지).
  */
 export async function deleteDocument(id: string): Promise<void> {
   const db = await getDB()
-  const tx = db.transaction(['documents', 'bookmarks'], 'readwrite')
+  const tx = db.transaction(['documents', 'pdfBlobs', 'bookmarks'], 'readwrite')
   // 1) 문서 삭제
   await tx.objectStore('documents').delete(id)
-  // 2) 이 문서의 북마크 키들을 인덱스로 모아 삭제
+  // 2) 원본 PDF 바이트 삭제(수 MB~수십 MB — 남기면 용량이 계속 쌓인다)
+  await tx.objectStore('pdfBlobs').delete(id)
+  // 3) 이 문서의 북마크 키들을 인덱스로 모아 삭제
   const idx = tx.objectStore('bookmarks').index('by-document')
   let cursor = await idx.openCursor(IDBKeyRange.only(id))
   while (cursor) {

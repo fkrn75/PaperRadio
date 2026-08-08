@@ -21,8 +21,11 @@
  * 문서 전체를 봐야 정해지는 값(머리말 패턴)은 결과에 담아 두었다가 페이지 재추출 때 주입한다.
  * ───────────────────────────────────────────────────────────────
  */
-import type { CleanBlock } from '../types.ts'
+import type { CleanBlock, PdfPageRange, RunningHeads } from '../types.ts'
 import type { CleanBlockEx, CleanPiece } from '../refine/blocks.ts'
+
+// 저장 스키마와 공유하는 타입은 types.ts 가 SSOT — 여기서는 재수출만 한다.
+export type { PdfPageRange, RunningHeads }
 
 /**
  * PDF → rawText 변환 로직의 버전.
@@ -90,25 +93,6 @@ const HEAD_ZONE = 0.08
 
 /** running head 로 확정하려면 이 비율 이상의 페이지에서 반복돼야 한다. */
 const HEAD_REPEAT_RATIO = 0.4
-
-/**
- * 문서 전체를 봐야 정해지는 값. 페이지 단위 재추출(텍스트 레이어 offset 재생성) 때
- * 그대로 주입해 **같은 결과**를 얻기 위해 결과에 담아 저장한다.
- */
-export interface RunningHeads {
-  /** 정규화된 머리말 텍스트들(페이지 상단). */
-  top: string[]
-  /** 정규화된 꼬리말 텍스트들(페이지 하단). */
-  bottom: string[]
-}
-
-export interface PdfPageRange {
-  page: number
-  /** 이 페이지 텍스트가 rawText 에서 차지하는 시작 offset. */
-  start: number
-  /** 끝 offset(exclusive). */
-  end: number
-}
 
 export interface PdfExtractResult {
   /** offset 좌표계의 기준이 되는 낭독용 원문. 화면에 렌더되지 않는다(원본은 canvas 로 그린다). */

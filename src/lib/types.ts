@@ -9,16 +9,46 @@
  */
 
 // ─────────────────────────────────────────────────────────────
-// FN-01 · 문서 입력
+// 문서 입력 (PDF 전용)
 // ─────────────────────────────────────────────────────────────
-export type SourceType = 'file' | 'paste'
 
-export interface RawDocument {
-  id: string
-  title: string
-  rawText: string
-  sourceType: SourceType
-  createdAt: number
+/** 페이지 ↔ rawText 범위 대응. "이 청크가 몇 쪽인지" 판정에 쓴다. */
+export interface PdfPageRange {
+  /** 1-based 페이지 번호. */
+  page: number
+  /** 이 페이지 텍스트가 rawText 에서 차지하는 시작 offset. */
+  start: number
+  /** 끝 offset(exclusive). */
+  end: number
+}
+
+/**
+ * 문서 전체를 봐야 정해지는 머리말/꼬리말 패턴.
+ *
+ * ⚠️ 반드시 저장해야 한다. 텍스트 레이어 offset 을 만들려고 페이지 하나만 다시 추출할 때
+ * 이 값을 주입하지 않으면 판정이 달라져 **offset 이 어긋난다**(저장된 북마크가 깨진다).
+ */
+export interface RunningHeads {
+  /** 정규화된 머리말 텍스트들(페이지 상단). */
+  top: string[]
+  /** 정규화된 꼬리말 텍스트들(페이지 하단). */
+  bottom: string[]
+}
+
+/** PDF 원본 정보 + 추출 부산물. 원본 바이트는 별도 스토어(pdfBlobs)에 둔다. */
+export interface PdfMeta {
+  fileName: string
+  fileSize: number
+  pageCount: number
+  pageRanges: PdfPageRange[]
+  runningHeads: RunningHeads
+  /** 텍스트가 하나도 없는 페이지(1-based). 전 페이지가 여기 들어오면 스캔본이다. */
+  emptyPages: number[]
+  /**
+   * rawText 를 만든 추출 로직 버전(EXTRACT_VERSION).
+   * ⚠️ 이게 다르면 offset 좌표계 자체가 달라진 것 → 재추출 + 북마크 재검토가 필요하다.
+   */
+  extractVersion: number
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -214,12 +244,19 @@ export interface Bookmark {
 export interface StoredDocument {
   id: string
   title: string
+  /**
+   * 추출된 낭독용 원문 — **offset 좌표계의 기준(SSOT)**.
+   * 화면에는 렌더되지 않는다(원본 페이지는 canvas 로 그린다). 청크·북마크·하이라이트가 모두
+   * 이 문자열의 문자 offset 위에 선다.
+   */
   rawText: string
-  cleanBlocks?: CleanBlock[] // 캐시(재정제 생략)
+  cleanBlocks?: CleanBlock[] // 캐시(재추출 생략)
   chunks?: Chunk[]
-  /** chunks 캐시를 만든 정제 로직 버전(REFINE_VERSION). 다르면 코드 업데이트로 보고 재정제한다. */
+  /** chunks 캐시를 만든 청크 로직 버전(REFINE_VERSION). 다르면 코드 업데이트로 보고 재생성한다. */
   refineVersion?: number
   lastChunkIndex?: number // 이어듣기(위치=청크 인덱스)
+  /** PDF 원본·추출 메타. 원본 바이트는 pdfBlobs 스토어에 같은 id 로 저장한다. */
+  pdf: PdfMeta
   createdAt: number
   updatedAt: number
 }

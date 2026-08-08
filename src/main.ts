@@ -1,6 +1,7 @@
 import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
+import { settingsStore } from './lib/stores/settings.svelte'
 import { syncDebugFlagFromUrl, isDebug } from './lib/debug/flag'
 
 // 모바일(안드로이드 등)에서는 콘솔을 보기 어려우므로 화면 하단에 로그 오버레이를 띄운다.
@@ -17,6 +18,9 @@ if (import.meta.env.DEV) {
   void import('./lib/debug/rafShim').then((m) => m.installRafShimForHiddenDoc())
 }
 
-mount(App, {
-  target: document.getElementById('app')!,
+// 설정(배속·테마 등)을 IndexedDB에서 먼저 복원한 뒤 앱을 마운트한다.
+settingsStore.load().then(() => {
+  mount(App, {
+    target: document.getElementById('app')!,
+  })
 })
