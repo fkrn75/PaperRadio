@@ -1,0 +1,47 @@
+# 의존성
+node_modules/
+.pnp
+.pnp.js
+
+# 빌드 산출물
+dist/
+dist-ssr/
+build/
+.output/
+.vercel/
+.svelte-kit/
+.vite/
+
+# 로컬 환경
+*.local
+.env
+.env.*
+!.env.example
+
+# 로그
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 에디터/OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# TTS 모델 가중치 (대용량 — 런타임에 다운로드/캐시, 리포에 넣지 않음)
+*.onnx
+*.onnx_data
+*.bin
+*.gguf
+public/models/
+src/assets/models/
+
+# 테스트/커버리지
+coverage/
+
+# Claude Code 로컬 설정(커밋 제외)
+.claude/

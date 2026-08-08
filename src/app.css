@@ -1,0 +1,91 @@
+/* Markdown Radio — 전역 스타일 토큰 + 리셋
+ * 컴포넌트별 스타일은 각 .svelte 의 <style> 에 둔다. 여기서는 변수/리셋/기본 타이포만. */
+
+:root {
+  /* 라이트 테마 */
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #eef2fb;
+  --text: #1c2230;
+  --text-muted: #4a5568;
+  --accent: #2b4c8c; /* 차분한 네이비-블루 */
+  --accent-strong: #16294d;
+  --accent-soft: #e8eeff;
+  --border: #e3e7ef;
+  --ok: #1f7a4d;
+  --ok-soft: #e8f5ee;
+  --warn: #b25b1b;
+  --warn-soft: #fdf0e6;
+  --highlight: #fff3bf; /* 현재 읽는 문장 하이라이트 */
+  --highlight-bookmark: #ffe08a;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 3px rgba(20, 35, 70, 0.08), 0 6px 24px rgba(20, 35, 70, 0.06);
+  --font: "Pretendard", -apple-system, BlinkMacSystemFont, "Malgun Gothic", "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1420;
+    --surface: #171d2b;
+    --surface-2: #1f2738;
+    --text: #e8ecf4;
+    --text-muted: #9aa6bd;
+    --accent: #6b9bff;
+    --accent-strong: #aac4ff;
+    --accent-soft: #1b2740;
+    --border: #2a3346;
+    --ok: #4cc38a;
+    --ok-soft: #16301f;
+    --warn: #e0944a;
+    --warn-soft: #2e2113;
+    --highlight: #4a4421;
+    --highlight-bookmark: #6b5a1e;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 6px 24px rgba(0, 0, 0, 0.3);
+  }
+}
+
+/* 사용자가 명시적으로 테마를 고른 경우(설정) — html[data-theme] 로 강제 */
+html[data-theme="light"] { color-scheme: light; }
+html[data-theme="dark"] { color-scheme: dark; }
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  line-height: 1.7;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+#app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

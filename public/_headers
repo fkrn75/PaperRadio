@@ -1,0 +1,8 @@
+# Cloudflare Pages 헤더 규칙.
+#
+# onnxruntime-web 멀티스레드 WASM(SharedArrayBuffer)을 켜기 위한 교차출처 격리.
+# 격리가 없으면 simd-threaded wasm 추론이 빈 버퍼(무음)를 낸다(안드로이드 실측).
+# credentialless: HuggingFace 등 cross-origin 모델/음성 리소스를 CORP 없이 허용(+ SAB 활성).
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless
