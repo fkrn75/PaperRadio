@@ -29,6 +29,13 @@ export interface CleanPiece {
   srcEnd: number
   /** 강조 유래 표시(마크다운 잔재). PDF 경로에서는 보통 쓰지 않는다. */
   isEmphasis?: 'strong' | 'emphasis'
+  /**
+   * 이 조각이 유래한 PDF 텍스트 item 의 인덱스(페이지 내 0-based).
+   *
+   * 정독뷰가 텍스트 레이어 span 에 offset 을 심을 때 **span ↔ 조각**을 잇는 열쇠다.
+   * 줄 사이 이음 문자(공백)처럼 item 에서 오지 않은 조각에는 없다.
+   */
+  itemIndex?: number
 }
 
 /**

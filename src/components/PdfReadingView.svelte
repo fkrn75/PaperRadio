@@ -15,15 +15,60 @@
    */
   import { getPdfBlob } from '../lib/db/idb'
   import { openPdf, type PdfDocument } from '../lib/pdf/loader'
-  import type { PdfMeta } from '../lib/types'
+  import { computePageSpanOffsets, type PdfPageInput } from '../lib/pdf/extract'
+  import { chunkIndexForOffset, pageForChunk } from '../lib/locate'
+  import type { Chunk, PdfMeta } from '../lib/types'
+  import ReadingControls from './ReadingControls.svelte'
 
   interface Props {
     docId: string
     pdf: PdfMeta
-    /** 재생 중인 페이지(1-based). 가상화에서 제외해 하이라이트가 사라지지 않게 한다. */
-    activePage?: number
+    /** offset 좌표계의 기준. 텍스트 레이어 span 위치를 복원하는 데 쓴다. */
+    rawText: string
+    chunks: Chunk[]
+    /** 재생 중인 청크(하이라이트 대상). */
+    currentChunkIndex?: number
+    playing?: boolean
+    onTogglePlay?: () => void
+    /** 문장 클릭 → 그 청크로 이동. */
+    onSeek?: (chunkIndex: number) => void
+    /** 문장 더블클릭 → 그 청크부터 즉시 재생. */
+    onSeekPlay?: (chunkIndex: number) => void
+    repeatMode?: 'off' | 'one' | 'ab'
+    abStart?: number | null
+    abEnd?: number | null
+    onToggleRepeatOne?: () => void
+    onAbButton?: () => void
   }
-  const { docId, pdf, activePage = 0 }: Props = $props()
+  const {
+    docId,
+    pdf,
+    rawText,
+    chunks,
+    currentChunkIndex,
+    playing = false,
+    onTogglePlay,
+    onSeek,
+    onSeekPlay,
+    repeatMode = 'off',
+    abStart = null,
+    abEnd = null,
+    onToggleRepeatOne,
+    onAbButton,
+  }: Props = $props()
+
+  /** 재생 중인 페이지(1-based). 가상화에서 제외해 하이라이트가 사라지지 않게 한다. */
+  const activePage = $derived(
+    typeof currentChunkIndex === 'number' ? pageForChunk(pdf.pageRanges, chunks, currentChunkIndex) : 0,
+  )
+
+  /** 현재 재생 중인 청크가 원문에서 차지하는 범위(하이라이트 대상). */
+  const currentRange = $derived.by(() => {
+    if (typeof currentChunkIndex !== 'number') return null
+    const c = chunks[currentChunkIndex]
+    if (!c || c.kind === 'silence') return null
+    return { start: c.startOffset, end: c.endOffset }
+  })
 
   /** 뷰포트에서 이만큼 떨어진 페이지까지 미리 그린다. */
   const LOAD_MARGIN_PX = 600
@@ -45,6 +90,12 @@
   const hosts = new Map<number, HTMLDivElement>()
   /** 현재 렌더돼 있는 canvas. */
   const canvases = new Map<number, HTMLCanvasElement>()
+  /** 페이지별 텍스트 레이어(투명 span 들). canvas 와 생애주기를 같이한다. */
+  const textLayers = new Map<number, HTMLDivElement>()
+  /** offset 복원에 실패한 페이지(재시도해도 같으므로 한 번만 시도). */
+  const mappingFailed = new Set<number>()
+  /** 지금 하이라이트된 span 들(다음 갱신 때 되돌린다). */
+  let highlighted: HTMLElement[] = []
   /** 진행 중인 렌더 작업(빠른 스크롤 시 취소용). */
   const tasks = new Map<number, { cancel(): void }>()
   /** 렌더 직렬화 체인 — 동시에 여러 페이지를 그리지 않는다. */
@@ -103,6 +154,10 @@
         c.remove()
       }
       canvases.clear()
+      for (const [, l] of textLayers) l.remove()
+      textLayers.clear()
+      highlighted = []
+      if (clickTimer) clearTimeout(clickTimer)
       void closeDoc?.()
       closeDoc = null
     }
@@ -124,7 +179,8 @@
     const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR)
     const base = p.getViewport({ scale: 1 })
     const cssWidth = host.clientWidth || 1
-    const viewport = p.getViewport({ scale: (cssWidth / base.width) * dpr })
+    const cssScale = cssWidth / base.width
+    const viewport = p.getViewport({ scale: cssScale * dpr })
 
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.floor(viewport.width))
@@ -137,6 +193,9 @@
     tasks.set(page, task)
     try {
       await task.promise
+      // 원본 위에 투명 텍스트를 얹는다 — 하이라이트와 클릭 재생의 실체.
+      await buildTextLayer(page, p, cssScale, host)
+      applyHighlight()
     } catch {
       // 취소(cancel)도 여기로 온다 — 흔적을 남기지 않고 되돌린다.
       canvas.width = 0
@@ -148,6 +207,68 @@
       p.cleanup()
       residentPages = [...canvases.keys()].sort((a, b) => a - b)
     }
+  }
+
+  /**
+   * 페이지 위에 투명 텍스트 레이어를 만든다. 각 span 에 rawText 기준 offset 을 심어,
+   * "재생 위치 → 하이라이트"와 "클릭 → 재생"이 **좌표 계산 없이** 성립하게 한다.
+   *
+   * offset 복원에 실패하면(추출 규칙 변경 등) 레이어를 만들지 않는다 — 페이지 보기는
+   * 그대로 유지되고 폐루프 기능만 조용히 빠진다(잘못된 위치로 점프하는 것보다 낫다).
+   */
+  async function buildTextLayer(
+    page: number,
+    p: Awaited<ReturnType<PdfDocument['getPage']>>,
+    cssScale: number,
+    host: HTMLElement,
+  ): Promise<void> {
+    if (textLayers.has(page) || mappingFailed.has(page) || chunks.length === 0) return
+    const range = pdf.pageRanges.find((r) => r.page === page)
+    if (!range) return
+
+    const tc = await p.getTextContent()
+    const items: PdfPageInput['items'] = []
+    for (const it of tc.items) {
+      if (typeof (it as { str?: unknown }).str === 'string') items.push(it as PdfPageInput['items'][number])
+    }
+    if (items.length === 0) return
+
+    const base = p.getViewport({ scale: 1 })
+    const offsets = computePageSpanOffsets(
+      { page, items, width: base.width, height: base.height },
+      rawText,
+      range,
+      pdf.runningHeads,
+      pdf.bodySize ?? 0,
+    )
+    if (!offsets) {
+      mappingFailed.add(page)
+      return
+    }
+
+    const byItem = new Map(offsets.map((o) => [o.itemIndex, o]))
+    const vp = p.getViewport({ scale: cssScale })
+    const layer = document.createElement('div')
+    layer.className = 'text-layer'
+
+    items.forEach((it, i) => {
+      const off = byItem.get(i)
+      if (!off || it.str === '') return
+      // PDF 좌표(아래가 0) → 화면 좌표. 얻은 y 는 글자 밑선이라 글자 높이만큼 올린다.
+      const [vx, vy] = vp.convertToViewportPoint(it.transform[4], it.transform[5])
+      const fs = (it.height || Math.abs(it.transform[3]) || 12) * cssScale
+      const span = document.createElement('span')
+      span.textContent = it.str
+      span.dataset.start = String(off.start)
+      span.dataset.end = String(off.end)
+      span.style.cssText =
+        `left:${vx.toFixed(2)}px;top:${(vy - fs).toFixed(2)}px;` +
+        `font-size:${fs.toFixed(2)}px;min-width:${(it.width * cssScale).toFixed(2)}px`
+      layer.appendChild(span)
+    })
+
+    host.appendChild(layer)
+    textLayers.set(page, layer)
   }
 
   /** 렌더 요청을 직렬 큐에 넣는다(동시 렌더 금지). */
@@ -165,7 +286,76 @@
     c.height = 0
     c.remove()
     canvases.delete(page)
+    // 텍스트 레이어도 함께 — 원본 그림 없이 남으면 보이지 않는 클릭 영역만 떠다닌다.
+    textLayers.get(page)?.remove()
+    textLayers.delete(page)
+    highlighted = highlighted.filter((el) => el.isConnected)
     residentPages = [...canvases.keys()].sort((a, b) => a - b)
+  }
+
+  /**
+   * 재생 중인 청크에 걸치는 span 을 **모두** 칠한다.
+   *
+   * ⚠️ 한 문장이 여러 span 에 걸린다 — PDF 텍스트는 시각적 줄 단위로 쪼개져 있어서,
+   * "가장 좁은 요소 하나"만 고르면 문장의 한 줄만 하이라이트된다.
+   */
+  function applyHighlight(): void {
+    for (const el of highlighted) el.classList.remove('cur')
+    highlighted = []
+    const r = currentRange
+    if (!r || !container) return
+    const spans = container.querySelectorAll<HTMLElement>('.text-layer span[data-start]')
+    for (const s of spans) {
+      const st = Number(s.dataset.start)
+      const en = Number(s.dataset.end)
+      if (en > r.start && st < r.end) {
+        s.classList.add('cur')
+        highlighted.push(s)
+      }
+    }
+  }
+
+  // 재생 위치가 바뀌면 하이라이트를 갱신하고, 재생 중이면 화면이 따라간다.
+  $effect(() => {
+    void currentRange
+    applyHighlight()
+    if (!playing) return
+    const first = highlighted[0]
+    // block:'nearest' — 이미 보이면 움직이지 않는다(읽는 흐름을 덜 방해).
+    first?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  })
+
+  // ── 클릭/더블클릭 재생 ──
+  let clickTimer: ReturnType<typeof setTimeout> | null = null
+
+  function seekFrom(el: HTMLElement): void {
+    const idx = chunkIndexForOffset(chunks, Number(el.dataset.start))
+    if (idx >= 0) onSeek?.(idx)
+  }
+
+  function handleClick(e: MouseEvent): void {
+    if (e.detail > 1) return // 더블클릭의 첫 클릭은 무시
+    const t = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-start]')
+    if (!t) return
+    if (clickTimer) clearTimeout(clickTimer)
+    // 더블클릭과 겹치지 않게 잠깐 기다렸다가 이동한다.
+    clickTimer = setTimeout(() => {
+      clickTimer = null
+      seekFrom(t)
+    }, 250)
+  }
+
+  function handleDblClick(e: MouseEvent): void {
+    if (clickTimer) {
+      clearTimeout(clickTimer)
+      clickTimer = null
+    }
+    const t = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-start]')
+    if (!t) return
+    // 더블클릭이 만든 텍스트 선택을 지운다(투명 글자라 선택이 보이면 지저분하다).
+    window.getSelection()?.removeAllRanges()
+    const idx = chunkIndexForOffset(chunks, Number(t.dataset.start))
+    if (idx >= 0) onSeekPlay?.(idx)
   }
 
   /** 언로드 마진 밖인가(히스테리시스의 바깥쪽 문턱). */
@@ -278,7 +468,22 @@
   })
 </script>
 
-<div class="reading" bind:this={container}>
+{#if chunks.length > 0 && onTogglePlay}
+  <ReadingControls
+    {playing}
+    {onTogglePlay}
+    {repeatMode}
+    {abStart}
+    {abEnd}
+    onToggleRepeatOne={onToggleRepeatOne ?? (() => {})}
+    onAbButton={onAbButton ?? (() => {})}
+    status={activePage ? `${activePage}쪽 재생 중` : ''}
+  />
+{/if}
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div class="reading" bind:this={container} onclick={handleClick} ondblclick={handleDblClick}>
   {#if loading}
     <p class="state">원본을 여는 중…</p>
   {:else if loadError}
@@ -354,6 +559,31 @@
     display: block;
     width: 100%;
     height: auto;
+  }
+
+  /*
+   * 텍스트 레이어 — 원본 그림 위에 얹는 투명 글자.
+   * 글자는 보이지 않고(색이 투명) 배경만 칠해 형광펜처럼 하이라이트한다.
+   * 클릭 대상이기도 하므로 pointer-events 는 살려 둔다.
+   */
+  .page :global(.text-layer) {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    line-height: 1;
+  }
+  .page :global(.text-layer span) {
+    position: absolute;
+    white-space: pre;
+    color: transparent;
+    transform-origin: 0 0;
+    cursor: pointer;
+    border-radius: 2px;
+    /* 클릭 판정을 조금 넉넉하게 — 글자 높이가 얇은 줄도 누르기 쉽게. */
+    padding: 0.05em 0;
+  }
+  .page :global(.text-layer span.cur) {
+    background: var(--highlight, rgba(255, 208, 0, 0.38));
   }
   .state {
     margin: 0;

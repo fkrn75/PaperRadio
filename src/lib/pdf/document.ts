@@ -93,6 +93,7 @@ export async function importPdfFile(file: File, opts: ImportOptions = {}): Promi
       pageRanges: ex.pageRanges,
       runningHeads: ex.runningHeads,
       emptyPages: ex.emptyPages,
+      bodySize: ex.bodySize,
       extractVersion: EXTRACT_VERSION,
     },
     createdAt: now,

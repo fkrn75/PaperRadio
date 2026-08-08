@@ -14,6 +14,7 @@
   import { libraryStore } from './lib/stores/library.svelte'
   import { getDocument, updateLastChunkIndex, addBookmark, listBookmarks } from './lib/db/idb'
   import { isViewOnly } from './lib/pdf/document'
+  import { pageForChunk } from './lib/locate'
   import type { Bookmark, EnginePosition, StoredDocument } from './lib/types'
   import Uploader from './components/Uploader.svelte'
   import Library from './components/Library.svelte'
@@ -38,14 +39,8 @@
   const docHash = $derived(doc ? hashText(doc.rawText) : '')
   const viewOnly = $derived(doc ? isViewOnly(doc) : false)
 
-  // 현재 청크가 몇 쪽인지 — pageRanges 로 역산(정독뷰가 붙으면 페이지 이동에 그대로 쓴다).
-  const currentPage = $derived.by(() => {
-    if (!doc) return 0
-    const c = doc.chunks?.[currentChunkIndex]
-    if (!c) return 0
-    const hit = doc.pdf.pageRanges.find((r) => c.startOffset >= r.start && c.startOffset < r.end)
-    return hit?.page ?? 0
-  })
+  // 현재 청크가 몇 쪽인지 — 헤더 표시용(정독뷰는 같은 계산을 내부에서 한다).
+  const currentPage = $derived(doc ? pageForChunk(doc.pdf.pageRanges, chunks, currentChunkIndex) : 0)
 
   /** 엔진 위치 변경 구독(현재 청크 추적 + 이어듣기 저장). */
   function attachEngine(): void {
@@ -84,6 +79,14 @@
   async function handleSelect(id: string): Promise<void> {
     const d = await getDocument(id)
     if (d) await openDocument(d)
+  }
+
+  /** 그 청크로 이동한 뒤 곧바로 재생(정독뷰 더블클릭 경로). */
+  function seekAndPlay(i: number): void {
+    if (viewOnly) return
+    engine.seekToChunk(i)
+    engine.play()
+    playing = true
   }
 
   function togglePlay(): void {
@@ -179,7 +182,22 @@
           />
         {/if}
       {:else}
-        <PdfReadingView docId={doc.id} pdf={doc.pdf} activePage={currentPage} />
+        <PdfReadingView
+          docId={doc.id}
+          pdf={doc.pdf}
+          rawText={doc.rawText}
+          {chunks}
+          {currentChunkIndex}
+          {playing}
+          onTogglePlay={togglePlay}
+          onSeek={(i) => engine.seekToChunk(i)}
+          onSeekPlay={seekAndPlay}
+          {repeatMode}
+          {abStart}
+          {abEnd}
+          onToggleRepeatOne={() => (repeatMode = repeatMode === 'one' ? 'off' : 'one')}
+          onAbButton={handleAbButton}
+        />
       {/if}
     </section>
   {/if}

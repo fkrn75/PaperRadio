@@ -52,6 +52,12 @@ export interface PdfMeta {
   /** 텍스트가 하나도 없는 페이지(1-based). 전 페이지가 여기 들어오면 스캔본이다. */
   emptyPages: number[]
   /**
+   * 본문 글자 크기(전체 중앙값). 헤딩 판정 기준.
+   * ⚠️ runningHeads 와 같은 이유로 저장한다 — 페이지 하나만 다시 추출해 텍스트 레이어
+   * offset 을 복원할 때 주입해야 같은 결과가 나온다. 옛 문서에는 없을 수 있어 optional.
+   */
+  bodySize?: number
+  /**
    * rawText 를 만든 추출 로직 버전(EXTRACT_VERSION).
    * ⚠️ 이게 다르면 offset 좌표계 자체가 달라진 것 → 재추출 + 북마크 재검토가 필요하다.
    */

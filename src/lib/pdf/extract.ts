@@ -66,6 +66,16 @@ export interface PdfPageInput {
 // 중간 표현: 줄(line)
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * item 과 **페이지 내 원본 인덱스**를 함께 들고 다니는 단위.
+ * 줄 묶기·정렬을 거쳐도 인덱스가 보존돼야 나중에 텍스트 레이어 span 과 이을 수 있다.
+ */
+interface IndexedItem {
+  it: PdfTextItem
+  /** input.items 에서의 위치(0-based). */
+  i: number
+}
+
 /** 같은 y 에 놓인 item 들을 묶은 시각적 한 줄. */
 interface Line {
   /** 줄의 기준 y(PDF 좌표, 클수록 위쪽). */
@@ -77,7 +87,7 @@ interface Line {
   /** 이 줄의 대표 글자 크기(헤딩 판정용). */
   size: number
   /** x 오름차순으로 정렬된 item 들. */
-  items: PdfTextItem[]
+  items: IndexedItem[]
   /** items 의 str 을 이어붙인 줄 텍스트(가공 전). */
   text: string
 }
@@ -105,6 +115,13 @@ export interface PdfExtractResult {
   runningHeads: RunningHeads
   /** 텍스트가 하나도 없는 페이지(1-based) — 스캔본 판정에 쓴다. */
   emptyPages: number[]
+  /**
+   * 본문 글자 크기(전체 페이지의 중앙값). 헤딩 판정 기준이다.
+   *
+   * ⚠️ 저장해 두었다가 **페이지 단독 재추출 때 반드시 주입**해야 한다. 한 쪽만 넣으면
+   * 중앙값이 그 쪽 기준으로 달라져 헤딩 판정 → 블록 경계 → 줄 이음까지 어긋난다.
+   */
+  bodySize: number
   extractVersion: number
 }
 
@@ -159,31 +176,37 @@ function joinerBetween(prev: string, next: string): string {
  * 본문 앞에 낭독된다. 그래서 좌표로 다시 정렬한다.
  */
 export function extractPageLines(input: PdfPageInput): Line[] {
-  const usable = input.items.filter((it) => it.str !== '')
+  // 원본 인덱스를 붙인 뒤 거른다 — 정렬·묶기를 거쳐도 "몇 번째 item 이었는지"가 남아야
+  // 정독뷰가 텍스트 레이어 span 에 offset 을 심을 수 있다.
+  const usable: IndexedItem[] = []
+  input.items.forEach((it, i) => {
+    if (it.str !== '') usable.push({ it, i })
+  })
   if (usable.length === 0) return []
 
   // y 로 군집 → 줄. 부동소수 오차와 위첨자를 흡수하려고 허용 오차를 둔다.
   const buckets: Line[] = []
-  for (const it of usable) {
+  for (const entry of usable) {
+    const { it } = entry
     const y = it.transform[5]
     const x = it.transform[4]
     const size = Math.abs(it.transform[0]) || it.height
     const hit = buckets.find((b) => Math.abs(b.y - y) <= LINE_Y_TOLERANCE)
     if (hit) {
-      hit.items.push(it)
+      hit.items.push(entry)
       hit.x = Math.min(hit.x, x)
       hit.endX = Math.max(hit.endX, x + it.width)
       hit.size = Math.max(hit.size, size)
     } else {
-      buckets.push({ y, x, endX: x + it.width, size, items: [it], text: '' })
+      buckets.push({ y, x, endX: x + it.width, size, items: [entry], text: '' })
     }
   }
 
   // 위 → 아래(y 내림차순), 줄 안에서는 왼 → 오른쪽(x 오름차순).
   buckets.sort((a, b) => b.y - a.y)
   for (const line of buckets) {
-    line.items.sort((p, q) => p.transform[4] - q.transform[4])
-    line.text = line.items.map((it) => it.str).join('')
+    line.items.sort((p, q) => p.it.transform[4] - q.it.transform[4])
+    line.text = line.items.map((e) => e.it.str).join('')
   }
   return buckets.filter((l) => l.text.trim() !== '')
 }
@@ -256,8 +279,13 @@ interface Building {
  * @param pages 페이지별 텍스트 item(1-based page 포함)
  * @param heads 미리 탐지한 머리말 패턴. 생략하면 여기서 탐지한다.
  *   페이지 단위 재추출 시에는 **반드시 저장해 둔 값을 주입**해야 같은 offset 이 나온다.
+ * @param bodySizeOverride 본문 글자 크기. 위와 같은 이유로 페이지 단독 재추출 때 주입한다.
  */
-export function extractPdfDocument(pages: PdfPageInput[], heads?: RunningHeads): PdfExtractResult {
+export function extractPdfDocument(
+  pages: PdfPageInput[],
+  heads?: RunningHeads,
+  bodySizeOverride?: number,
+): PdfExtractResult {
   const runningHeads = heads ?? detectRunningHeads(pages)
 
   let rawText = ''
@@ -265,11 +293,14 @@ export function extractPdfDocument(pages: PdfPageInput[], heads?: RunningHeads):
   const pageRanges: PdfPageRange[] = []
   const emptyPages: number[] = []
 
-  // 본문 글자 크기의 중앙값 → 헤딩 판정 기준.
-  const allSizes: number[] = []
-  for (const p of pages) for (const l of extractPageLines(p)) allSizes.push(l.size)
-  allSizes.sort((a, b) => a - b)
-  const bodySize = allSizes.length ? allSizes[Math.floor(allSizes.length / 2)] : 12
+  // 본문 글자 크기의 중앙값 → 헤딩 판정 기준. 주입값이 있으면 그것이 우선(재현성).
+  let bodySize = bodySizeOverride ?? 0
+  if (!bodySize) {
+    const allSizes: number[] = []
+    for (const p of pages) for (const l of extractPageLines(p)) allSizes.push(l.size)
+    allSizes.sort((a, b) => a - b)
+    bodySize = allSizes.length ? allSizes[Math.floor(allSizes.length / 2)] : 12
+  }
 
   let building: Building | null = null
 
@@ -383,13 +414,13 @@ export function extractPdfDocument(pages: PdfPageInput[], heads?: RunningHeads):
         }
       }
 
-      // item 하나 = piece 하나. 이 대응이 나중에 텍스트 레이어 span ↔ offset 을 잇는다.
-      for (const it of line.items) {
+      // item 하나 = piece 하나. itemIndex 로 나중에 텍스트 레이어 span ↔ offset 을 잇는다.
+      for (const { it, i } of line.items) {
         if (it.str === '') continue
         const srcStart = rawText.length
         rawText += it.str
         b.text += it.str
-        b.pieces.push({ plain: it.str, srcStart, srcEnd: rawText.length })
+        b.pieces.push({ plain: it.str, srcStart, srcEnd: rawText.length, itemIndex: i })
       }
       b.size = Math.max(b.size, line.size)
       prevLine = line
@@ -406,10 +437,73 @@ export function extractPdfDocument(pages: PdfPageInput[], heads?: RunningHeads):
     })
   }
 
-  return { rawText, blocks, pageRanges, runningHeads, emptyPages, extractVersion: EXTRACT_VERSION }
+  return {
+    rawText,
+    blocks,
+    pageRanges,
+    runningHeads,
+    emptyPages,
+    bodySize,
+    extractVersion: EXTRACT_VERSION,
+  }
 }
 
 /** 블록에서 CleanBlock 표면만 필요한 곳을 위한 헬퍼(타입 좁히기용). */
 export function toCleanBlocks(blocks: CleanBlockEx[]): CleanBlock[] {
   return blocks
+}
+
+// ─────────────────────────────────────────────────────────────
+// 4) 페이지 → 텍스트 레이어 span 의 offset (정독뷰 폐루프용)
+// ─────────────────────────────────────────────────────────────
+
+/** 한 텍스트 item 이 rawText 에서 차지하는 범위. 정독뷰가 span 에 심는 값이다. */
+export interface PageSpanOffset {
+  /** 페이지 내 item 인덱스(0-based). */
+  itemIndex: number
+  /** 문서 rawText 기준 절대 offset. */
+  start: number
+  end: number
+}
+
+/**
+ * 한 페이지의 텍스트 item 들이 문서 rawText 에서 차지하는 절대 범위를 복원한다.
+ *
+ * 왜 "복원"인가: 조각(piece) 정보는 저장하지 않는다(문서 하나가 수만 개가 될 수 있다).
+ * 대신 **같은 추출 로직을 그 페이지에만 다시 돌려** 상대 offset을 얻고, 저장된 rawText 안에서
+ * 위치를 찾아 절대 offset 으로 옮긴다. 문서 전체를 다시 훑지 않으므로 페이지 렌더만큼 가볍다.
+ *
+ * ⚠️ 재현성 조건: heads 와 bodySize 를 저장된 값 그대로 넣어야 한다. 하나라도 다르면 블록
+ *    경계나 줄 이음이 달라져 다른 문자열이 나온다.
+ *
+ * @param storedRawText 저장된 문서 원문(offset 좌표계의 기준)
+ * @param range 이 페이지의 저장된 rawText 범위
+ * @returns 매핑 배열. 재현에 실패하면 **null** — 호출측은 하이라이트/클릭재생만 끄고
+ *          페이지 보기는 그대로 유지하면 된다(조용한 오작동보다 낫다).
+ */
+export function computePageSpanOffsets(
+  page: PdfPageInput,
+  storedRawText: string,
+  range: PdfPageRange,
+  heads: RunningHeads,
+  bodySize: number,
+): PageSpanOffset[] | null {
+  const solo = extractPdfDocument([page], heads, bodySize)
+  if (solo.rawText === '') return null
+
+  // 저장본 안에서 이 페이지 텍스트가 시작하는 위치를 찾는다.
+  // 블록 사이 구분자('\n\n')가 페이지 앞에 붙는지 여부를 자동으로 흡수한다.
+  const slice = storedRawText.slice(range.start, range.end)
+  const at = slice.indexOf(solo.rawText)
+  if (at < 0) return null // 추출 규칙이 바뀌었거나 저장본이 옛 버전 → 조용히 포기
+
+  const base = range.start + at
+  const out: PageSpanOffset[] = []
+  for (const b of solo.blocks) {
+    for (const p of b.pieces) {
+      if (p.itemIndex === undefined) continue // 줄 이음 공백 등은 span 이 없다
+      out.push({ itemIndex: p.itemIndex, start: base + p.srcStart, end: base + p.srcEnd })
+    }
+  }
+  return out
 }
