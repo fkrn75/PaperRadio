@@ -20,6 +20,13 @@ export interface PdfPageRange {
   start: number
   /** 끝 offset(exclusive). */
   end: number
+  /**
+   * 페이지 크기(pt, scale=1).
+   * 정독뷰가 **렌더 전에 자리를 예약**하는 데 쓴다 — 없으면 페이지가 그려질 때마다 높이가
+   * 바뀌어 스크롤이 튄다. 옛 문서에는 없을 수 있어 optional 이다(그 경우 첫 페이지 크기로 대체).
+   */
+  width?: number
+  height?: number
 }
 
 /**

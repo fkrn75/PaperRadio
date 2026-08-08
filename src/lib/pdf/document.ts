@@ -46,7 +46,7 @@ export async function importPdfFile(file: File, opts: ImportOptions = {}): Promi
   // ⚠️ pdf.js 는 넘긴 ArrayBuffer 를 transfer 해 detach 시킨다. 원본은 File(Blob) 로 따로
   //    보관하므로, 파싱에는 복제본을 넘긴다.
   const buf = await file.arrayBuffer()
-  const pdf = await openPdf(buf.slice(0))
+  const { doc: pdf, close } = await openPdf(buf.slice(0))
 
   // 문서 제목: PDF 메타데이터의 Title 이 쓸 만하면 우선, 아니면 파일명.
   let title = titleFromFileName(file.name)
@@ -104,8 +104,8 @@ export async function importPdfFile(file: File, opts: ImportOptions = {}): Promi
   await savePdfBlob(doc.id, file)
   await saveDocument(doc)
 
-  // 페이지 리소스 해제(대용량 문서에서 특히 중요). 워커는 loader 가 싱글턴으로 재사용한다.
-  void pdf.cleanup()
+  // 가져오기가 끝나면 문서를 닫는다 — 대용량 PDF 를 연달아 추가할 때 자원이 쌓이지 않게.
+  void close()
   return doc
 }
 

@@ -18,8 +18,11 @@
   import Uploader from './components/Uploader.svelte'
   import Library from './components/Library.svelte'
   import Player from './components/Player.svelte'
+  import PdfReadingView from './components/PdfReadingView.svelte'
 
   let view = $state<'library' | 'player'>('library')
+  /** 문서 화면의 탭. 청취=재생 컨트롤, 정독=원본 페이지. */
+  let tab = $state<'listen' | 'read'>('listen')
   let doc = $state<StoredDocument | null>(null)
   let bookmarks = $state<Bookmark[]>([])
 
@@ -73,6 +76,8 @@
       engine.seekToChunk(resume)
     }
     playing = false
+    // 스캔본은 들을 게 없으니 곧바로 정독(원본 보기)으로 연다.
+    tab = isViewOnly(d) ? 'read' : 'listen'
     view = 'player'
   }
 
@@ -138,32 +143,43 @@
     </section>
   {:else if doc}
     <section class="pane">
-      {#if viewOnly}
-        <!-- 스캔본: 텍스트 레이어가 없어 낭독할 내용이 없다. 정독(보기)은 Phase 2 에서 가능해진다. -->
-        <div class="notice">
-          <p class="notice-title">읽을 수 있는 텍스트가 없는 PDF입니다</p>
-          <p class="notice-sub">
-            종이를 스캔한 이미지 PDF로 보입니다. 글자 정보가 없어 낭독은 할 수 없지만,
-            원본 페이지는 그대로 볼 수 있습니다.
-          </p>
-        </div>
+      <nav class="tabs" aria-label="문서 보기 방식">
+        <button class="tab" class:on={tab === 'listen'} onclick={() => (tab = 'listen')} disabled={viewOnly}>
+          청취
+        </button>
+        <button class="tab" class:on={tab === 'read'} onclick={() => (tab = 'read')}>정독</button>
+      </nav>
+
+      {#if tab === 'listen'}
+        {#if viewOnly}
+          <!-- 스캔본: 글자 정보가 없어 낭독할 내용이 없다. 정독(보기)은 정상 동작한다. -->
+          <div class="notice">
+            <p class="notice-title">읽을 수 있는 텍스트가 없는 PDF입니다</p>
+            <p class="notice-sub">
+              종이를 스캔한 이미지 PDF로 보입니다. 글자 정보가 없어 낭독은 할 수 없지만,
+              원본 페이지는 정독 탭에서 그대로 볼 수 있습니다.
+            </p>
+          </div>
+        {:else}
+          <Player
+            {chunks}
+            {engine}
+            {playing}
+            onTogglePlay={togglePlay}
+            docId={doc.id}
+            {docHash}
+            onBookmark={handleBookmark}
+            onChunkChange={(i) => (currentChunkIndex = i)}
+            {repeatMode}
+            {abStart}
+            {abEnd}
+            queuePos={null}
+            onToggleRepeatOne={() => (repeatMode = repeatMode === 'one' ? 'off' : 'one')}
+            onAbButton={handleAbButton}
+          />
+        {/if}
       {:else}
-        <Player
-          {chunks}
-          {engine}
-          {playing}
-          onTogglePlay={togglePlay}
-          docId={doc.id}
-          {docHash}
-          onBookmark={handleBookmark}
-          onChunkChange={(i) => (currentChunkIndex = i)}
-          {repeatMode}
-          {abStart}
-          {abEnd}
-          queuePos={null}
-          onToggleRepeatOne={() => (repeatMode = repeatMode === 'one' ? 'off' : 'one')}
-          onAbButton={handleAbButton}
-        />
+        <PdfReadingView docId={doc.id} pdf={doc.pdf} activePage={currentPage} />
       {/if}
     </section>
   {/if}
@@ -212,6 +228,30 @@
     display: flex;
     flex-direction: column;
     gap: 1.25rem;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--border, #e3e7ef);
+  }
+  .tab {
+    font: inherit;
+    font-size: 0.9rem;
+    padding: 0.45rem 0.95rem;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--muted, #4a5568);
+    cursor: pointer;
+  }
+  .tab.on {
+    color: #2b4c8c;
+    border-bottom-color: #2b4c8c;
+    font-weight: 600;
+  }
+  .tab:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
   .notice {
     border: 1px solid var(--border, #e3e7ef);

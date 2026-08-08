@@ -27,12 +27,29 @@ export function loadPdfjs(): Promise<PdfjsModule> {
   return pdfjsPromise
 }
 
+/** pdf.js 의 문서 핸들. 모듈이 동적 import 라 타입을 이렇게 끌어온다. */
+export type PdfDocument = Awaited<ReturnType<PdfjsModule['getDocument']>['promise']>
+
+export interface OpenedPdf {
+  doc: PdfDocument
+  /**
+   * 문서와 관련 자원(워커 측 페이지 캐시 포함)을 해제한다.
+   *
+   * ⚠️ `PDFDocumentProxy` 자체에는 destroy 가 없다 — 해제는 **로딩 태스크**의 몫이라
+   *    이렇게 함께 돌려준다. 정독뷰처럼 문서를 오래 열어두는 쪽은 반드시 호출할 것
+   *    (안 하면 문서를 바꿔 열 때마다 워커 자원이 쌓인다).
+   */
+  close(): Promise<void>
+}
+
 /**
  * ArrayBuffer 로부터 PDF 문서를 연다.
  * ⚠️ pdf.js 는 넘긴 버퍼의 소유권을 가져가(transfer) 호출측 버퍼를 detach 시킬 수 있다.
  *    원본을 나중에 다시 쓸 거라면 호출측에서 slice() 로 복제해 넘길 것.
  */
-export async function openPdf(data: ArrayBuffer) {
+export async function openPdf(data: ArrayBuffer): Promise<OpenedPdf> {
   const pdfjs = await loadPdfjs()
-  return pdfjs.getDocument({ data }).promise
+  const task = pdfjs.getDocument({ data })
+  const doc = await task.promise
+  return { doc, close: () => task.destroy() }
 }

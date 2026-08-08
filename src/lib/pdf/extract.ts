@@ -396,7 +396,14 @@ export function extractPdfDocument(pages: PdfPageInput[], heads?: RunningHeads):
     }
 
     flush()
-    pageRanges.push({ page: page.page, start: pageStart, end: rawText.length })
+    // 크기도 함께 기록 — 정독뷰가 렌더 전에 페이지 자리를 예약해 스크롤 튐을 막는다.
+    pageRanges.push({
+      page: page.page,
+      start: pageStart,
+      end: rawText.length,
+      width: page.width,
+      height: page.height,
+    })
   }
 
   return { rawText, blocks, pageRanges, runningHeads, emptyPages, extractVersion: EXTRACT_VERSION }
