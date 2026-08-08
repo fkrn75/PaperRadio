@@ -45,3 +45,6 @@ coverage/
 
 # Claude Code 로컬 설정(커밋 제외)
 .claude/
+
+# 대화 압축 전 작업 스냅샷(로컬 노트 — 공개 리포에 올리지 않는다)
+CONTEXT-SAVE.md
