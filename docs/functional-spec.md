@@ -339,7 +339,8 @@ pdf.js 는 `intent:'print'` 가 아니면 rAF 로 렌더를 스케줄하는데, 
 npm run test:extract <pdf경로>        # 추출 → 청크 → FN-03(strict) 회귀 검사
 node tools/inspect-pdf.mjs <pdf경로>  # 새 PDF 의 item 구조 진단(분절 단위·hasEOL·2단 여부)
 node tools/make-sample-pdf.mjs        # 의존성 없는 검증용 픽스처 생성
-node tools/make-icons.mjs             # 앱 아이콘(PNG) 재생성
+# 앱 아이콘(PNG) 재생성 — sharp 는 빌드에 불필요하므로 의존성에 두지 않는다
+npm i -D sharp && node tools/make-icons.mjs && npm uninstall sharp
 ```
 
 ---

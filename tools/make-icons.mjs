@@ -8,7 +8,12 @@
  * maskable 은 별도로 만든다 — 플랫폼이 원형/사각형으로 잘라내므로 안전 영역(중앙 80%)
  * 안에 핵심 요소를 넣어야 한다. 같은 그림을 축소해 여백을 키운 버전이다.
  *
- * 사용: node tools/make-icons.mjs
+ * ⚠️ sharp 는 **의존성으로 두지 않는다.** 네이티브 바이너리라 CI(Cloudflare Pages) 설치가
+ *    느리거나 실패할 수 있는데, 정작 앱 빌드에는 전혀 쓰이지 않는다. 산출물(PNG)은 리포에
+ *    커밋돼 있으므로 아이콘을 다시 구울 때만 임시로 설치한다.
+ *
+ * 사용:
+ *   npm i -D sharp && node tools/make-icons.mjs && npm uninstall sharp
  */
 import { mkdirSync } from 'node:fs'
 import sharp from 'sharp'
