@@ -1,7 +1,7 @@
 {
-  "name": "Markdown Radio",
-  "short_name": "MD Radio",
-  "description": "한국어 마크다운/텍스트를 온디바이스 TTS로 흘려듣고, 북마크→원문 정독으로 잇는 폐루프 웹앱",
+  "name": "PaperRadio",
+  "short_name": "PaperRadio",
+  "description": "PDF를 원본 그대로 보면서 온디바이스 TTS로 듣는 웹앱",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
