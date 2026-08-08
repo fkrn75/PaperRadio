@@ -12,7 +12,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test:speak": "node --experimental-strip-types src/lib/refine/speak.check.ts"
+    "test:speak": "node --experimental-strip-types src/lib/refine/speak.check.ts",
+    "test:extract": "node --experimental-strip-types src/lib/pdf/extract.check.ts"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
