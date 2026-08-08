@@ -35,8 +35,10 @@ export type { PdfPageRange, RunningHeads }
  * 줄 병합)을 바꿀 때마다 +1 하고, 저장된 문서는 재추출한다.
  *
  * 이력: 1 = 최초. y 정렬 · 머리말/꼬리말 제거 · 한국어 줄바꿈 무공백 병합 · 하이픈 분철 병합.
+ *       2 = 2단 조판 컬럼 분리. 세로 여백을 찾아 좌/우 단을 가르고, 전폭 요소를 밴드 경계로
+ *           삼아 "좌단 전체 → 우단 전체" 순으로 읽는다. 1단 문서의 결과는 1과 동일하다.
  */
-export const EXTRACT_VERSION = 1
+export const EXTRACT_VERSION = 2
 
 // ─────────────────────────────────────────────────────────────
 // 입력 계약 (pdf.js 타입에 직접 의존하지 않는다 — 순수 함수·테스트 용이)
@@ -70,7 +72,7 @@ export interface PdfPageInput {
  * item 과 **페이지 내 원본 인덱스**를 함께 들고 다니는 단위.
  * 줄 묶기·정렬을 거쳐도 인덱스가 보존돼야 나중에 텍스트 레이어 span 과 이을 수 있다.
  */
-interface IndexedItem {
+export interface IndexedItem {
   it: PdfTextItem
   /** input.items 에서의 위치(0-based). */
   i: number
@@ -103,6 +105,20 @@ const HEAD_ZONE = 0.08
 
 /** running head 로 확정하려면 이 비율 이상의 페이지에서 반복돼야 한다. */
 const HEAD_REPEAT_RATIO = 0.4
+
+/** 컬럼 탐지를 시도할 최소 item 수. 표지처럼 내용이 적은 쪽은 판단하지 않는다. */
+const COLUMN_MIN_ITEMS = 24
+/** 세로 여백(gutter)이 페이지 폭에서 차지해야 할 최소 비율. */
+const GUTTER_MIN_RATIO = 0.035
+/** 각 컬럼이 가져야 할 최소 item 비율. 한쪽만 차 있으면 2단이 아니다. */
+const COLUMN_MIN_SHARE = 0.15
+/**
+ * 세로 여백 판정 관용도. 가장 빽빽한 칸 대비 이 비율 이하로 덮인 칸은 "비었다"고 본다.
+ *
+ * ⚠️ 0(=완전히 비어야 함)으로 두면 **제목·표처럼 두 단을 가로지르는 요소 몇 개 때문에
+ * 여백이 사라져 2단을 놓친다**(실측). 전폭 요소는 소수이므로 밀도로 걸러낸다.
+ */
+const GUTTER_COVER_TOLERANCE = 0.2
 
 export interface PdfExtractResult {
   /** offset 좌표계의 기준이 되는 낭독용 원문. 화면에 렌더되지 않는다(원본은 canvas 로 그린다). */
@@ -175,18 +191,13 @@ function joinerBetween(prev: string, next: string): string {
  * 꼬리말("문서명 2")이 본문보다 먼저 나왔다. 순서를 믿고 이어붙이면 매 쪽 꼬리말이
  * 본문 앞에 낭독된다. 그래서 좌표로 다시 정렬한다.
  */
-export function extractPageLines(input: PdfPageInput): Line[] {
-  // 원본 인덱스를 붙인 뒤 거른다 — 정렬·묶기를 거쳐도 "몇 번째 item 이었는지"가 남아야
-  // 정독뷰가 텍스트 레이어 span 에 offset 을 심을 수 있다.
-  const usable: IndexedItem[] = []
-  input.items.forEach((it, i) => {
-    if (it.str !== '') usable.push({ it, i })
-  })
-  if (usable.length === 0) return []
+/** 같은 y 에 놓인 item 들을 묶어 줄을 만든다(순수 y 군집화 — 컬럼 개념 없음). */
+function groupIntoLines(items: IndexedItem[]): Line[] {
+  if (items.length === 0) return []
 
   // y 로 군집 → 줄. 부동소수 오차와 위첨자를 흡수하려고 허용 오차를 둔다.
   const buckets: Line[] = []
-  for (const entry of usable) {
+  for (const entry of items) {
     const { it } = entry
     const y = it.transform[5]
     const x = it.transform[4]
@@ -209,6 +220,136 @@ export function extractPageLines(input: PdfPageInput): Line[] {
     line.text = line.items.map((e) => e.it.str).join('')
   }
   return buckets.filter((l) => l.text.trim() !== '')
+}
+
+/**
+ * 2단 조판의 세로 여백(gutter)을 찾는다. 1단이면 null.
+ *
+ * 원리: 페이지 폭을 잘게 나눠 글자가 놓인 칸을 표시하면, 2단 조판에서는 가운데에
+ * **아무 글자도 없는 띠**가 위에서 아래까지 관통한다. 그 띠의 한가운데를 경계로 삼는다.
+ *
+ * 오탐을 막으려고 두 가지를 더 본다:
+ *  - 띠가 페이지 중앙부(32~68%)에 있고 충분히 넓은가
+ *  - 양쪽 컬럼에 각각 충분한 내용이 있는가(한쪽만 차 있으면 그냥 들여쓰기다)
+ */
+export function detectGutter(items: IndexedItem[], pageWidth: number): number | null {
+  if (items.length < COLUMN_MIN_ITEMS || pageWidth <= 0) return null
+
+  const BINS = 120
+  // 덮임을 **밀도**로 센다 — 전폭 요소 몇 개가 여백을 지나가도 묻히도록.
+  const cover = new Array<number>(BINS).fill(0)
+  for (const { it } of items) {
+    if (it.str.trim() === '') continue
+    const x0 = it.transform[4]
+    const x1 = x0 + it.width
+    const b0 = Math.max(0, Math.floor((x0 / pageWidth) * BINS))
+    const b1 = Math.min(BINS - 1, Math.ceil((x1 / pageWidth) * BINS))
+    for (let b = b0; b <= b1; b++) cover[b]++
+  }
+  const maxCover = Math.max(...cover)
+  if (maxCover === 0) return null
+  const emptyMax = Math.floor(maxCover * GUTTER_COVER_TOLERANCE)
+
+  // 중앙부에서 가장 넓은 "성긴" 띠.
+  const lo = Math.floor(BINS * 0.32)
+  const hi = Math.ceil(BINS * 0.68)
+  let best: { start: number; len: number } | null = null
+  let run = -1
+  for (let b = lo; b <= hi; b++) {
+    if (cover[b] <= emptyMax) {
+      if (run < 0) run = b
+    } else if (run >= 0) {
+      const len = b - run
+      if (!best || len > best.len) best = { start: run, len }
+      run = -1
+    }
+  }
+  if (run >= 0) {
+    const len = hi - run + 1
+    if (!best || len > best.len) best = { start: run, len }
+  }
+
+  const minBins = Math.max(2, Math.ceil(BINS * GUTTER_MIN_RATIO))
+  if (!best || best.len < minBins) return null
+
+  const split = ((best.start + best.len / 2) / BINS) * pageWidth
+
+  // 양쪽에 실제로 내용이 있어야 2단이다.
+  let left = 0
+  let right = 0
+  for (const { it } of items) {
+    const x0 = it.transform[4]
+    if (x0 + it.width <= split) left++
+    else if (x0 >= split) right++
+  }
+  const need = items.length * COLUMN_MIN_SHARE
+  if (left < need || right < need) return null
+
+  return split
+}
+
+/**
+ * 한 페이지의 item 들을 시각적 읽기 순서의 줄 목록으로 만든다.
+ *
+ * ⚠️ 실측 근거: pdf.js 의 item 순서는 **읽기 순서가 아니다**. 검사한 한국어 PDF 에서
+ * 꼬리말("문서명 2")이 본문보다 먼저 나왔다. 순서를 믿고 이어붙이면 매 쪽 꼬리말이
+ * 본문 앞에 낭독된다. 그래서 좌표로 다시 정렬한다.
+ *
+ * ⚠️ 2단 조판에서는 y 로만 묶으면 **좌우 컬럼의 같은 높이 글이 한 줄로 합쳐져** 문장이
+ * 뒤섞인다. 그래서 줄로 묶기 **전에** 컬럼을 먼저 가른다.
+ */
+export function extractPageLines(input: PdfPageInput): Line[] {
+  // 원본 인덱스를 붙인 뒤 거른다 — 정렬·묶기를 거쳐도 "몇 번째 item 이었는지"가 남아야
+  // 정독뷰가 텍스트 레이어 span 에 offset 을 심을 수 있다.
+  const usable: IndexedItem[] = []
+  input.items.forEach((it, i) => {
+    if (it.str !== '') usable.push({ it, i })
+  })
+  if (usable.length === 0) return []
+
+  const split = detectGutter(usable, input.width)
+  if (split === null) return groupIntoLines(usable)
+
+  // 여백을 가로지르는 item 은 제목·초록·표처럼 두 단을 걸치는 **전폭 요소**다.
+  const leftItems: IndexedItem[] = []
+  const rightItems: IndexedItem[] = []
+  const fullItems: IndexedItem[] = []
+  for (const e of usable) {
+    const x0 = e.it.transform[4]
+    if (x0 + e.it.width <= split) leftItems.push(e)
+    else if (x0 >= split) rightItems.push(e)
+    else fullItems.push(e)
+  }
+
+  const fullLines = groupIntoLines(fullItems)
+  const leftLines = groupIntoLines(leftItems)
+  const rightLines = groupIntoLines(rightItems)
+
+  /**
+   * 전폭 줄의 y 를 경계로 페이지를 가로 밴드로 나누고, 각 밴드 안에서
+   * **좌컬럼 전체 → 우컬럼 전체** 순으로 읽는다. 논문의 "제목(전폭) → 본문 2단 →
+   * 표(전폭) → 다시 2단" 같은 구조가 이 규칙 하나로 풀린다.
+   */
+  const out: Line[] = []
+  let hiY = Infinity
+  for (let i = 0; i <= fullLines.length; i++) {
+    const loY = i < fullLines.length ? fullLines[i].y : -Infinity
+    for (const col of [leftLines, rightLines]) {
+      // 경계는 [loY, hiY) — 전폭 줄과 같은 높이의 컬럼 줄은 그 앞 밴드에 넣어 누락을 막는다.
+      for (const l of col) if (l.y < hiY && l.y >= loY) out.push(l)
+    }
+    if (i < fullLines.length) {
+      out.push(fullLines[i])
+      hiY = fullLines[i].y
+    }
+  }
+
+  // 안전망: 밴드 경계에서 한 줄이라도 잃었다면 컬럼 분리를 포기하고 단순 정렬로 돌아간다.
+  // 순서가 조금 어색한 것보다 내용이 사라지는 쪽이 훨씬 나쁘다.
+  const expected = fullLines.length + leftLines.length + rightLines.length
+  if (out.length !== expected) return groupIntoLines(usable)
+
+  return out
 }
 
 // ─────────────────────────────────────────────────────────────

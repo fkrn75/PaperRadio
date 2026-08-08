@@ -9,13 +9,16 @@
  *    임베딩이 필요해 여기서 다루지 않는다 — 한국어 추출·청크 품질은 실제 한국어 PDF 로
  *    Phase 1 에서 검증한다. Phase 0 가 보려는 것(워커·offset 정합·렌더 메모리)에는 충분하다.
  *
- * 사용: node tools/make-sample-pdf.mjs [페이지수] > public/samples/sample.pdf
- *   또는 node tools/make-sample-pdf.mjs 12 public/samples/sample.pdf
+ * 사용:
+ *   node tools/make-sample-pdf.mjs 12 public/samples/sample.pdf
+ *   node tools/make-sample-pdf.mjs 4 /tmp/two-col.pdf two-column   # 2단 조판 검증용
  */
 import { writeFileSync } from 'node:fs'
 
 const pageCount = Number(process.argv[2] ?? 12)
 const outPath = process.argv[3] ?? 'public/samples/sample.pdf'
+/** 'two-column' 이면 2단 조판 픽스처를 만든다(컬럼 분리 검증용). */
+const layout = process.argv[4] ?? 'single'
 
 /** 한 쪽에 들어갈 본문 줄들. 줄마다 별도 Tj → pdf.js 에서 별도 text item 이 된다. */
 function linesFor(pageNo) {
@@ -34,6 +37,64 @@ function linesFor(pageNo) {
     `Footer marker ${pageNo} -- headers and footers must be droppable.`,
   ]
   return body
+}
+
+/** 1단 배치: 왼쪽 여백에서 아래로. */
+function singleColumnPlacements(pageNo) {
+  const out = []
+  let y = 780
+  for (const text of linesFor(pageNo)) {
+    if (text !== '') out.push({ text, x: 72, y })
+    y -= 22
+  }
+  return out
+}
+
+/**
+ * 2단 배치(컬럼 분리 검증용).
+ *
+ * 논문 구조를 흉내낸다 — 전폭 제목 → 2단 본문 → 전폭 주석 → 다시 2단.
+ * 줄마다 번호를 박아 두었으므로, 추출 결과가
+ *   제목 → Left 1..8 → Right 1..8 → 전폭 주석 → Left 9..12 → Right 9..12
+ * 순이면 컬럼 분리가 제대로 된 것이다. y 로만 묶으면 Left 1, Right 1 이 한 줄로 붙는다.
+ *
+ * 좌단 60~290 / 우단 320~550 → 가운데 30pt 여백(A4 폭 595 의 약 5%)이 gutter 가 된다.
+ */
+function twoColumnPlacements(pageNo) {
+  const out = []
+  out.push({ text: `Page ${pageNo} - two column fixture title`, x: 60, y: 790, size: 15 })
+
+  let y = 750
+  for (let i = 1; i <= 8; i++) {
+    out.push({ text: `Left column line ${i} on page ${pageNo}.`, x: 60, y })
+    y -= 20
+  }
+  y = 750
+  for (let i = 1; i <= 8; i++) {
+    out.push({ text: `Right column line ${i} on page ${pageNo}.`, x: 320, y })
+    y -= 20
+  }
+
+  out.push({ text: `Full width note on page ${pageNo} spanning both columns.`, x: 60, y: 560 })
+
+  y = 530
+  for (let i = 9; i <= 12; i++) {
+    out.push({ text: `Left column line ${i} on page ${pageNo}.`, x: 60, y })
+    y -= 20
+  }
+  y = 530
+  for (let i = 9; i <= 12; i++) {
+    out.push({ text: `Right column line ${i} on page ${pageNo}.`, x: 320, y })
+    y -= 20
+  }
+
+  // 매 쪽 반복되는 꼬리말(머리말 제거 검증도 겸한다)
+  out.push({ text: `Two column fixture -- page ${pageNo}`, x: 60, y: 40, size: 9 })
+  return out
+}
+
+function placementsFor(pageNo) {
+  return layout === 'two-column' ? twoColumnPlacements(pageNo) : singleColumnPlacements(pageNo)
 }
 
 // ── PDF 오브젝트 조립 ────────────────────────────────────────────
@@ -56,12 +117,16 @@ objects[2] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /Win
 for (let p = 1; p <= pageCount; p++) {
   const pageObj = FIRST_PAGE_OBJ + (p - 1) * 2
   const contentObj = pageObj + 1
-  // 각 줄을 개별 Td/Tj 로 배치 → 줄 = text item
-  let y = 780
-  let stream = 'BT\n/F1 12 Tf\n'
-  for (const line of linesFor(p)) {
-    if (line !== '') stream += `1 0 0 1 72 ${y} Tm\n(${esc(line)}) Tj\n`
-    y -= 22
+  // 배치마다 개별 Tm/Tj → 배치 하나 = text item 하나
+  let stream = 'BT\n'
+  let curSize = 0
+  for (const pl of placementsFor(p)) {
+    const size = pl.size ?? 12
+    if (size !== curSize) {
+      stream += `/F1 ${size} Tf\n`
+      curSize = size
+    }
+    stream += `1 0 0 1 ${pl.x} ${pl.y} Tm\n(${esc(pl.text)}) Tj\n`
   }
   stream += 'ET\n'
 

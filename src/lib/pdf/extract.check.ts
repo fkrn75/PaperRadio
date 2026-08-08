@@ -7,7 +7,7 @@
  * 사용: node --experimental-strip-types src/lib/pdf/extract.check.ts <pdf경로> [쪽수]
  */
 import { readFileSync } from 'node:fs'
-import { extractPdfDocument, type PdfPageInput } from './extract.ts'
+import { extractPdfDocument, detectGutter, type PdfPageInput, type IndexedItem } from './extract.ts'
 import { buildChunks } from '../refine/index.ts'
 
 const path = process.argv[2]
@@ -79,6 +79,23 @@ for (const pat of [...res.runningHeads.top, ...res.runningHeads.bottom]) {
   }
   const mark = n <= 2 ? '✅' : '⚠️'
   console.log(`  ${mark} 반복 패턴 "${pat.slice(0, 28)}" 잔존 ${n}회 (제거 전이면 쪽수만큼 나온다)`)
+}
+
+// ── 조판 판정 (2단이면 컬럼 분리가 걸려야 한다) ──
+const twoCol: number[] = []
+for (const p of pages) {
+  const indexed: IndexedItem[] = []
+  p.items.forEach((it, i) => {
+    if (it.str !== '') indexed.push({ it, i })
+  })
+  if (detectGutter(indexed, p.width) !== null) twoCol.push(p.page)
+}
+console.log(`\n── 조판 ──`)
+if (twoCol.length === 0) {
+  console.log(`  1단으로 판정(전 쪽)`)
+} else {
+  console.log(`  2단 판정 ${twoCol.length}/${pages.length}쪽 → ${twoCol.slice(0, 12).join(', ')}${twoCol.length > 12 ? ' …' : ''}`)
+  console.log(`  (좌단 전체 → 우단 전체 순으로 읽는다. 전폭 요소는 밴드 경계가 된다)`)
 }
 
 // ── 블록/조각 자체 정합성 (청크 이전 단계에서 이미 깨졌는지 확인) ──
