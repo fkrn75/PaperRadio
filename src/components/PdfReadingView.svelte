@@ -812,13 +812,24 @@
     /* 클릭 판정을 조금 넉넉하게 — 글자 높이가 얇은 줄도 누르기 쉽게. */
     padding: 0.05em 0;
   }
+  /*
+   * ⚠️ 여기서는 테마 토큰(--highlight)을 쓰지 않는다.
+   *
+   * 아래 깔린 것은 PDF 원본 페이지(canvas)라 **테마와 무관하게 늘 흰 종이에 검은 글자**다.
+   * 다크 모드 토큰(#4a4421 같은 어두운 색)을 칠하면 검은 글자가 묻혀 읽히지 않는다(실측).
+   * 그래서 색을 테마에 맡기지 않고 반투명 + multiply 로 고정해 형광펜처럼 얹는다
+   * — 흰 종이는 노랗게 물들고 글자는 검은 채로 남는다.
+   * blend 를 지원하지 않는 환경이어도 알파가 있어 글자가 비쳐 보인다.
+   */
   .page :global(.text-layer span.cur) {
-    background: var(--highlight, rgba(255, 208, 0, 0.38));
+    background: rgba(255, 213, 0, 0.45);
+    mix-blend-mode: multiply;
   }
-  /* 북마크로 찾아온 위치 — 재생 하이라이트와 색을 달리해 구분한다. */
+  /* 북마크로 찾아온 위치 — 재생 하이라이트와 색을 달리해 구분한다(같은 이유로 테마 비의존). */
   .page :global(.text-layer span.jump) {
-    background: var(--highlight-bookmark, rgba(43, 76, 140, 0.28));
-    outline: 1px solid rgba(43, 76, 140, 0.5);
+    background: rgba(96, 156, 255, 0.4);
+    outline: 1px solid rgba(43, 76, 140, 0.55);
+    mix-blend-mode: multiply;
   }
   .state {
     margin: 0;
