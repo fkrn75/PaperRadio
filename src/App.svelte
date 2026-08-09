@@ -98,6 +98,17 @@
     return () => e.off('chunkChange', onChange)
   })
 
+  /**
+   * 선택한 음성(voiceURI)을 엔진에 반영. 없으면 null = 엔진 기본(남성 우선).
+   *
+   * ⚠️ Player 의 드롭다운은 **설정에 저장만** 한다. 실제 `engine.setVoice` 는 여기서만 부른다.
+   *    이 effect 가 없으면 목소리를 바꿔도 처음 음성으로만 계속 재생된다(실측).
+   *    `engine` 을 읽으므로 엔진을 갈아끼워도 선택이 다시 적용된다.
+   */
+  $effect(() => {
+    engine.setVoice?.(settingsStore.value.voiceURI ?? null)
+  })
+
   // 음질 프리셋(ttsQuality) → Supertonic 의 totalStep 반영. webspeech 면 아무 일도 하지 않는다.
   $effect(() => {
     const e = engine
